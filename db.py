@@ -295,12 +295,17 @@ def matches_for_player(name: str):
         ).fetchall()
 
 
-def pending_matches(grp: str = None):
+def pending_matches(grp: str = None, stage: str = None):
     with get_conn() as conn:
         if grp:
             return conn.execute(
                 "SELECT * FROM matches WHERE status='scheduled' AND LOWER(grp)=LOWER(?) ORDER BY id",
                 (grp,),
+            ).fetchall()
+        if stage:
+            return conn.execute(
+                "SELECT * FROM matches WHERE status='scheduled' AND LOWER(stage)=LOWER(?) ORDER BY id",
+                (stage,),
             ).fetchall()
         return conn.execute(
             "SELECT * FROM matches WHERE status='scheduled' ORDER BY id"
