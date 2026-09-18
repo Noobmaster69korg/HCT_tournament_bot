@@ -212,6 +212,37 @@ def get_match(match_id: int):
         return conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
 
 
+def delete_match(match_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM matches WHERE id = ?", (match_id,))
+        return cur.rowcount > 0
+
+
+def all_custom_stages():
+    """Every stage name in use besides the fixed 'group' stage, e.g. any
+    stage an admin created via /creatematch or /bulkcreate (super12,
+    semifinal, groupb_tiebreaker, ...)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT stage FROM matches WHERE stage != 'group' ORDER BY stage"
+        ).fetchall()
+        return [r["stage"] for r in rows]
+
+
+def players_in_stage(stage: str):
+    """Distinct player names appearing in any match of a given stage."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT player1, player2 FROM matches WHERE LOWER(stage) = LOWER(?)",
+            (stage,),
+        ).fetchall()
+    names = set()
+    for r in rows:
+        names.add(r["player1"])
+        names.add(r["player2"])
+    return sorted(names)
+
+
 def set_result(match_id: int, runs1: int, runs2: int):
     if runs1 > runs2:
         winner = None  # filled below using stored player names
