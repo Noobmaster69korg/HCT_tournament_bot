@@ -12,6 +12,7 @@ Run with:
 
 import logging
 import os
+import re
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -66,6 +67,13 @@ def format_match_line(m) -> str:
     return f"#{m['id']} {m['player1']} vs {m['player2']}{day}{label} — not played yet"
 
 
+def stage_display_name(stage: str) -> str:
+    """Human-friendly label for a stage, falling back to a title-cased
+    version of whatever custom name an admin used (e.g. 'groupb_tiebreaker'
+    -> 'Groupb Tiebreaker')."""
+    return db.STAGE_LABELS.get(stage, stage.replace("_", " ").title())
+
+
 def format_table(rows, title: str) -> str:
     if not rows:
         return f"{title}\n\nNo completed matches yet."
@@ -93,28 +101,32 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin = db.is_admin(update.effective_user.id)
+    bot_username = context.bot.username or "your_bot"
+    tag = f"@{bot_username}"
     text = (
         "<b>Public commands</b>\n"
-        "/groups — list groups and players\n"
-        "/players &lt;A|B|C&gt; — list players in a group\n"
-        "/schedule &lt;A|B|C&gt; [day] — fixtures for a group (day like 14/09)\n"
-        "/myfixtures &lt;name&gt; — all fixtures for one player\n"
-        "/table &lt;A|B|C|super12|...&gt; — points table for a stage/group\n"
-        "/result &lt;player1&gt; &lt;player2&gt; — look up a completed result\n"
-        "/pending [A|B|C] — matches not yet played\n"
-        "/whoami — show your Telegram user id\n"
+        f"/groups{tag} — list groups and players\n"
+        f"/players{tag} &lt;A|B|C&gt; — list players in a group\n"
+        f"/schedule{tag} &lt;A|B|C&gt; [day] — fixtures for a group (day like 14/09)\n"
+        f"/myfixtures{tag} &lt;name&gt; — all fixtures for one player\n"
+        f"/table{tag} &lt;A|B|C|super12|...&gt; — points table for a stage/group\n"
+        f"/result{tag} &lt;player1&gt; &lt;player2&gt; — look up a completed result\n"
+        f"/pending{tag} [A|B|C] — matches not yet played\n"
+        f"/whoami{tag} — show your Telegram user id\n"
     )
     if is_admin:
         text += (
             "\n<b>Admin commands</b>\n"
-            "/setresult &lt;player1&gt; &lt;player2&gt; &lt;runs1&gt; &lt;runs2&gt; — record a result\n"
-            "/editresult &lt;player1&gt; &lt;player2&gt; &lt;runs1&gt; &lt;runs2&gt; — fix a recorded result\n"
-            "/creatematch &lt;stage&gt; &lt;player1&gt; &lt;player2&gt; [label] — add a Super12/playoff match\n"
-            "  stages: super12, qualifier, semifinal, final, bronze\n"
-            "/addplayer &lt;name&gt; [group] — add a player (e.g. a replacement)\n"
-            "/addadmin &lt;user_id&gt; — add another admin\n"
-            "/removeadmin &lt;user_id&gt; — remove an admin\n"
-            "/listadmins — list current admins\n"
+            f"/setresult{tag} &lt;player1&gt; &lt;player2&gt; &lt;runs1&gt; &lt;runs2&gt; — record a result\n"
+            f"/editresult{tag} &lt;player1&gt; &lt;player2&gt; &lt;runs1&gt; &lt;runs2&gt; — fix a recorded result\n"
+            f"/creatematch{tag} &lt;stage&gt; &lt;player1&gt; &lt;player2&gt; [label] — add a Super12/playoff match\n"
+            "  stages: super12, qualifier, semifinal, final, bronze (or any custom name)\n"
+            f"/bulkcreate{tag} &lt;stage&gt; then one 'PlayerA vs PlayerB | label' per line — add several matches at once\n"
+            f"/deletematch{tag} &lt;match_id&gt; — delete a wrongly-created match\n"
+            f"/addplayer{tag} &lt;name&gt; [group] — add a player (e.g. a replacement)\n"
+            f"/addadmin{tag} &lt;user_id&gt; — add another admin\n"
+            f"/removeadmin{tag} &lt;user_id&gt; — remove an admin\n"
+            f"/listadmins{tag} — list current admins\n"
         )
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -132,6 +144,9 @@ async def groups_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         players = db.players_in_group(grp)
         names = ", ".join(p["name"] for p in players)
         lines.append(f"<b>Group {grp}</b>: {names}")
+    for stage in db.all_custom_stages():
+        names = db.players_in_stage(stage)
+        lines.append(f"<b>{stage_display_name(stage)}</b>: {', '.join(names)}")
     await update.message.reply_text("\n\n".join(lines), parse_mode="HTML")
 
 
@@ -194,7 +209,7 @@ async def table_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         stage = STAGE_ALIASES.get(key, key)
         rows = db.standings_for(stage)
-        title = f"{db.STAGE_LABELS.get(stage, stage.title())} points table"
+        title = f"{stage_display_name(stage)} points table"
     await update.message.reply_text(format_table(rows, title), parse_mode="HTML")
 
 
@@ -313,6 +328,82 @@ async def creatematch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @admin_only
+async def deletematch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /deletematch <match_id>\n(match ids show as #123 in /schedule, /pending, etc.)")
+        return
+    try:
+        match_id = int(context.args[0].lstrip("#"))
+    except ValueError:
+        await update.message.reply_text("match_id must be a number, e.g. /deletematch 109")
+        return
+    match = db.get_match(match_id)
+    if not match:
+        await update.message.reply_text(f"No match found with id #{match_id}.")
+        return
+    db.delete_match(match_id)
+    await update.message.reply_text(
+        f"Deleted match #{match_id}: {match['player1']} vs {match['player2']} "
+        f"({stage_display_name(match['stage'])})."
+    )
+
+
+@admin_only
+async def bulkcreate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text or ""
+    lines = text.split("\n")
+    first_line_parts = lines[0].split(maxsplit=1)
+
+    if len(first_line_parts) < 2 or len(lines) < 2:
+        await update.message.reply_text(
+            "Usage — first line is the stage, then one match per line, all in a "
+            "single message:\n\n"
+            "/bulkcreate groupB_tiebreaker\n"
+            "Navoneel vs Arko | Round 1\n"
+            "Jai vs Shivam | Round 1\n"
+            "Ashish vs Arko | Round 2\n"
+            "...\n\n"
+            "The label after '|' is optional. 'vs' (any case) separates the two names."
+        )
+        return
+
+    stage_token = first_line_parts[1].strip().split()[0]
+    stage = STAGE_ALIASES.get(stage_token.lower(), stage_token.lower())
+
+    created, errors = [], []
+    for raw_line in lines[1:]:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "|" in line:
+            match_part, label = line.split("|", 1)
+            label = label.strip() or None
+        else:
+            match_part, label = line, None
+
+        parts = re.split(r"\s+vs\.?\s+", match_part.strip(), flags=re.IGNORECASE)
+        if len(parts) != 2:
+            errors.append(f"Couldn't parse (expected 'Player1 vs Player2'): {line}")
+            continue
+
+        p1, p2 = parts[0].strip(), parts[1].strip()
+        if not db.find_player(p1):
+            errors.append(f"Unknown player '{p1}' in: {line}")
+            continue
+        if not db.find_player(p2):
+            errors.append(f"Unknown player '{p2}' in: {line}")
+            continue
+
+        match_id = db.create_match(stage, p1, p2, label=label)
+        created.append(f"#{match_id} {p1} vs {p2}" + (f" ({label})" if label else ""))
+
+    reply = f"Created {len(created)} match(es) in '{stage_display_name(stage)}':\n" + "\n".join(created)
+    if errors:
+        reply += "\n\nSkipped:\n" + "\n".join(errors)
+    await update.message.reply_text(reply)
+
+
+@admin_only
 async def addplayer_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /addplayer <name> [group]")
@@ -394,6 +485,8 @@ def main():
     app.add_handler(CommandHandler("setresult", setresult_cmd))
     app.add_handler(CommandHandler("editresult", editresult_cmd))
     app.add_handler(CommandHandler("creatematch", creatematch_cmd))
+    app.add_handler(CommandHandler("bulkcreate", bulkcreate_cmd))
+    app.add_handler(CommandHandler("deletematch", deletematch_cmd))
     app.add_handler(CommandHandler("addplayer", addplayer_cmd))
     app.add_handler(CommandHandler("addadmin", addadmin_cmd))
     app.add_handler(CommandHandler("removeadmin", removeadmin_cmd))
