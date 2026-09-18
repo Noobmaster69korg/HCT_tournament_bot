@@ -107,11 +107,11 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>Public commands</b>\n"
         f"/groups{tag} — list groups and players\n"
         f"/players{tag} &lt;A|B|C&gt; — list players in a group\n"
-        f"/schedule{tag} &lt;A|B|C&gt; [day] — fixtures for a group (day like 14/09)\n"
+        f"/schedule{tag} &lt;A|B|C|stage_name&gt; [day] — fixtures for a group or custom stage (day like 14/09, groups only)\n"
         f"/myfixtures{tag} &lt;name&gt; — all fixtures for one player\n"
         f"/table{tag} &lt;A|B|C|super12|...&gt; — points table for a stage/group\n"
         f"/result{tag} &lt;player1&gt; &lt;player2&gt; — look up a completed result\n"
-        f"/pending{tag} [A|B|C] — matches not yet played\n"
+        f"/pending{tag} [A|B|C|stage_name] — matches not yet played\n"
         f"/whoami{tag} — show your Telegram user id\n"
     )
     if is_admin:
@@ -165,16 +165,29 @@ async def players_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def schedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: /schedule <A|B|C> [day e.g. 14/09]")
+        await update.message.reply_text(
+            "Usage: /schedule <A|B|C|stage_name> [day for A/B/C, e.g. 14/09]\n"
+            "For custom stages use the exact stage name (underscores, no spaces), "
+            "e.g. /schedule groupb_tiebreaker"
+        )
         return
-    grp = context.args[0]
-    day = context.args[1] if len(context.args) > 1 else None
-    matches = db.matches_for_group(grp, day)
+    key = context.args[0]
+    if key.upper() in ("A", "B", "C"):
+        grp = key.upper()
+        day = context.args[1] if len(context.args) > 1 else None
+        matches = db.matches_for_group(grp, day)
+        title = f"Group {grp} schedule" + (f" — {day}" if day else "")
+    else:
+        stage = STAGE_ALIASES.get(key.lower(), key.lower())
+        matches = db.matches_for_stage(stage)
+        title = f"{stage_display_name(stage)} schedule"
+
     if not matches:
-        await update.message.reply_text("No matches found for that group/day.")
+        await update.message.reply_text(
+            "No matches found. Check /groups for the exact stage name to use."
+        )
         return
     lines = [format_match_line(m) for m in matches]
-    title = f"Group {grp.upper()} schedule" + (f" — {day}" if day else "")
     await update.message.reply_text(title + "\n" + "\n".join(lines))
 
 
@@ -226,8 +239,15 @@ async def result_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    grp = context.args[0] if context.args else None
-    matches = db.pending_matches(grp)
+    if not context.args:
+        matches = db.pending_matches()
+    else:
+        key = context.args[0]
+        if key.upper() in ("A", "B", "C"):
+            matches = db.pending_matches(grp=key.upper())
+        else:
+            stage = STAGE_ALIASES.get(key.lower(), key.lower())
+            matches = db.pending_matches(stage=stage)
     if not matches:
         await update.message.reply_text("No pending matches 🎉")
         return
