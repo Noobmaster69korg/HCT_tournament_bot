@@ -218,6 +218,20 @@ def delete_match(match_id: int) -> bool:
         return cur.rowcount > 0
 
 
+def remove_player_from_stage(stage: str, name: str) -> int:
+    """Deletes every match (played or not) for a player within one specific
+    stage only — leaves the player row and their matches in every other
+    stage completely untouched. Returns how many matches were deleted."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """DELETE FROM matches
+               WHERE LOWER(stage) = LOWER(?)
+               AND (LOWER(player1) = LOWER(?) OR LOWER(player2) = LOWER(?))""",
+            (stage, name, name),
+        )
+        return cur.rowcount
+
+
 def all_custom_stages():
     """Every stage name in use besides the fixed 'group' stage, e.g. any
     stage an admin created via /creatematch or /bulkcreate (super12,
