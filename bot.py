@@ -123,6 +123,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "  stages: super12, qualifier, semifinal, final, bronze (or any custom name)\n"
             f"/bulkcreate{tag} &lt;stage&gt; then one 'PlayerA vs PlayerB | label' per line — add several matches at once\n"
             f"/deletematch{tag} &lt;match_id&gt; — delete a wrongly-created match\n"
+            f"/removefromstage{tag} &lt;stage&gt; &lt;name&gt; — remove a player from one stage only (other stages untouched)\n"
             f"/addplayer{tag} &lt;name&gt; [group] — add a player (e.g. a replacement)\n"
             f"/addadmin{tag} &lt;user_id&gt; — add another admin\n"
             f"/removeadmin{tag} &lt;user_id&gt; — remove an admin\n"
@@ -369,6 +370,31 @@ async def deletematch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @admin_only
+async def removefromstage_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage: /removefromstage <stage> <name>\n"
+            "Deletes every match (played or not) for that player within that "
+            "one stage only — their matches in every other stage (e.g. Group "
+            "A results) are left untouched. This can't be undone."
+        )
+        return
+    stage_key = context.args[0]
+    stage = STAGE_ALIASES.get(stage_key.lower(), stage_key.lower())
+    name = " ".join(context.args[1:])
+
+    if not db.find_player(name):
+        await update.message.reply_text(f"No player named '{name}' found.")
+        return
+
+    count = db.remove_player_from_stage(stage, name)
+    await update.message.reply_text(
+        f"Removed {name} from {stage_display_name(stage)}: deleted {count} match(es). "
+        f"Their matches in other stages are untouched."
+    )
+
+
+@admin_only
 async def bulkcreate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
     lines = text.split("\n")
@@ -507,6 +533,7 @@ def main():
     app.add_handler(CommandHandler("creatematch", creatematch_cmd))
     app.add_handler(CommandHandler("bulkcreate", bulkcreate_cmd))
     app.add_handler(CommandHandler("deletematch", deletematch_cmd))
+    app.add_handler(CommandHandler("removefromstage", removefromstage_cmd))
     app.add_handler(CommandHandler("addplayer", addplayer_cmd))
     app.add_handler(CommandHandler("addadmin", addadmin_cmd))
     app.add_handler(CommandHandler("removeadmin", removeadmin_cmd))
